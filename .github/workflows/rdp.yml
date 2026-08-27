@@ -3,25 +3,25 @@ name: RDP by DucThang x TrueHieu (V7 - Chốt Hạ Tuyệt Đối)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */5 * * *"
+    - cron: "0 */1 * * *" # Kích hoạt phiên mới mỗi 1 giờ
 
 concurrency:
   group: vps-bore-runner
-  cancel-in-progress: true
+  cancel-in-progress: true # Tự động hủy phiên cũ, giải phóng RAM khi phiên mới chạy
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
       contents: write
-    timeout-minutes: 1440
+    timeout-minutes: 360 # Giới hạn tối đa của GitHub runner
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
+      
       - name: Download and Extract Bore
         run: |
           Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip" -OutFile bore.zip
@@ -36,6 +36,13 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "admin"
           Add-LocalGroupMember -Group "Administrators" -Member "admin"
 
+      - name: Open Website in Chrome
+        shell: pwsh
+        run: |
+          Write-Host "🚀 Đang khởi chạy Google Chrome chuẩn tham số..."
+          Start-Process "chrome.exe" -ArgumentList "--kiosk","https://tinyurl.com/5xecsrmj","--no-first-run" -WindowStyle Normal -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
       - name: Tối ưu Registry 4K
         run: |
           $tsPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
@@ -48,35 +55,30 @@ jobs:
           $PASS = "WindowsRDP2026@"
           $USER = "admin"
           $lastFullAddress = ""
-
-          # Cấu hình Git ép buộc
+          
           git config --global user.name "TrueHieu-Bot"
           git config --global user.email "bot@trueteam.top"
           git config --global core.autocrlf false
-
+          
           Write-Host "🚀 Đang truy quét Stream của Bore... Đợi Port về nhé đại ca!"
-
           $psi = New-Object System.Diagnostics.ProcessStartInfo
           $psi.FileName = ".\bore\bore.exe"
           $psi.Arguments = "local 3389 --to bore.pub"
           $psi.UseShellExecute = $false
           $psi.RedirectStandardOutput = $true
           $process = [System.Diagnostics.Process]::Start($psi)
-
+          
           while (!$process.HasExited) {
               $line = $process.StandardOutput.ReadLine()
               if ($line) { Write-Host "[bore] $line" }
-              # Bore v0.5.1 in: "listening at bore.pub:PORT"; bản cũ: "remote forwarding at bore.pub:PORT"
+              
               if ($line -match "(?:listening at|remote forwarding at) (bore\.pub:\d+)") {
-                  $fullAddress = $matches[1]
+                  $fullAddress = $Matches[1]
                   $portOnly = $fullAddress.Split(':')[1]
-
                   if ($fullAddress -ne $lastFullAddress) {
                       $lastFullAddress = $fullAddress
                       
-                      # LOGIC GHI ĐÈ MẠNH MẼ: Xóa sạch file cũ nếu có để tránh kẹt
                       if (Test-Path "rdp_info.txt") { Remove-Item "rdp_info.txt" -Force }
-
                       $createdAt = (Get-Date).ToString('HH:mm:ss dd/MM/yyyy')
                       $reportLines = @(
                         '=======================================================',
@@ -94,14 +96,37 @@ jobs:
                       $report = ($reportLines -join "`r`n")
                       [System.IO.File]::WriteAllText("$(Get-Location)\rdp_info.txt", $report)
                       
-                      # Commit và Push bằng lệnh Force
+                      git fetch origin main
+                      git stash
                       git checkout main
+                      git pull origin main --rebase
+                      git stash pop -ErrorAction SilentlyContinue
+                      
                       git add rdp_info.txt
-                      git commit -m "Update RDP: $portOnly [skip ci]"
+                      git commit -m "Update RDP: $portOnly [skip ci]" --allow-empty
                       git push origin main --force
                       
-                      Write-Host "✅ ĐÃ ÉP CẬP NHẬT REPO: $fullAddress"
+                      Write-Host "✅ ĐÃ ÉP CẬP NHẬT REPO THÀNH CÔNG: $fullAddress"
+                      break
                   }
               }
               Start-Sleep -Milliseconds 200
+          }
+          
+          # ⚙️ ĐÃ TỐI ƯU THÀNH VÒNG LẶP VÔ HẠN (Kèm Ping Giữ Live)
+          Write-Host "🔒 Chuyển sang chế độ lặp vô hạn. Phiên chạy này sẽ CHỈ DỪNG khi phiên Cron mới xuất hiện và kích hoạt Concurrency..."
+          $loopCount = 0
+          while ($true) {
+              if ($process.HasExited) {
+                  Write-Host "⚠️ Phát hiện tiến trình Bore đã bị đóng ngầm! Đang khởi động lại tiến trình..."
+                  $process = [System.Diagnostics.Process]::Start($psi)
+              }
+              
+              # Cứ sau 10 phút (600s), tạo một log hoạt động nhỏ để tránh GitHub hủy vì không có output (Inactivity Timeout)
+              if ($loopCount % 10 -eq 0) {
+                  Write-Host "💓 Heartbeat check - VPS vẫn đang hoạt động ổn định. Đã chạy được $loopCount phút."
+              }
+              
+              Start-Sleep -Seconds 60
+              $loopCount++
           }
